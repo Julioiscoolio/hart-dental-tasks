@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Hart Dental — Task Communicator</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:#eef2f1;color:#172020;-webkit-font-smoothing:antialiased;}
+textarea,input{resize:none;font-family:'DM Sans',sans-serif;}
+input,textarea,button{outline:none;border:none;background:none;}
+button{cursor:pointer;font-family:'DM Sans',sans-serif;}
+::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:#d5e5e2;border-radius:4px;}
+.fade-up{animation:fadeUp .32s cubic-bezier(.22,1,.36,1) both;}
+.fade-in{animation:fadeIn .22s ease both;}
+.slide-in{animation:slideIn .3s cubic-bezier(.22,1,.36,1) both;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}
+.spin{animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{animation:pulse 1.6s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+.opt-btn{transition:all .15s ease;border:2px solid #d5e5e2;background:#fff;border-radius:13px;width:100%;display:flex;align-items:center;gap:12px;padding:13px 15px;text-align:left;cursor:pointer;}
+.opt-btn:hover{transform:translateY(-1px);box-shadow:0 3px 12px rgba(0,0,0,.08);border-color:#a8ccc8;}
+.opt-btn.sel-teal{border-color:#1f9080;background:#dff2ef;box-shadow:0 0 0 3px rgba(31,144,128,.1);transform:translateY(-1px);}
+.opt-btn.sel-amber{border-color:#e8a025;background:#fdf3df;box-shadow:0 0 0 3px rgba(232,160,37,.1);transform:translateY(-1px);}
+.check-item{display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;transition:background .15s;}
+.check-item:hover{background:#f7faf9;}
+.check-item.done-item{opacity:.55;}
+.tab-btn{padding:8px 16px;border-radius:20px;font-size:13px;font-weight:500;transition:all .18s;cursor:pointer;border:none;}
+.tab-btn.active{background:#0b2233;color:#fff;}
+.tab-btn:not(.active){color:#546868;background:transparent;}
+.tab-btn:not(.active):hover{background:#d5e5e2;}
+.progress-fill{transition:width .4s cubic-bezier(.22,1,.36,1);}
+.demo-badge{display:none;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+// ══════════════════════════════════════════════════════
+// CONFIG — fill these in before uploading to Vercel
+// ══════════════════════════════════════════════════
+const SUPABASE_URL       = "https://doytatvanozoaljrtvbh.supabase.co";
+const SUPABASE_KEY       = "sb_publishable_fr7sX1dfB5joU5Oe11nUWA_AoV7Xp2d";
+// ══════════════════════════════════════════════════
+
+const { useState, useEffect, useRef } = React;
+
+// Supabase client
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Claude API
+async function callClaude(messages, system) {
+  const res = await fetch("/api/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ system, messages }),
+  });
+  const d = await res.json();
+  return d.content?.map(b => b.text || "").join("") || "";
+}
+
+// ── Design tokens ─────────────────────────────────────────────
+const G = {
+  bg:"#eef2f1",surface:"#ffffff",card:"#f7faf9",
+  navy:"#0b2233",teal:"#156b60",tealLight:"#dff2ef",
+  tealMid:"#1f9080",tealBright:"#22a898",
+  accent:"#e8a025",accentLight:"#fdf3df",
+  green:"#1e6e3a",greenLight:"#e8f7f0",
+  text:"#172020",sub:"#546868",border:"#d5e5e2",
+  shadow:"0 2px 20px rgba(11,34,51,.07)",
+  shadowMd:"0 6px 32px rgba(11,34,51,.12)",
+};
+
+// ── Utilities ─────────────────────────────────────────────────
+const nowStr = () => new Date().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+const uid    = () => Math.random().toString(36).slice(2,9);
+const normalizeSteps = (s=[]) => s.map(x => typeof x==="string"?{text:x,done:false}:x);
+
+// ── Supabase storage ──────────────────────────────────────────────────────────
+const loadTasks = async () => {
+  const { data } = await sb.from("dental_tasks").select("payload");
+  return (data || []).map(r => r.payload);
+};
+const saveOneTask = async (task) => {
+  await sb.from("dental_tasks").upsert({ id: task.id, payload: task }, { onConflict: "id" });
+};
+const loadRecurring = async () => {
+  const { data } = await sb.from("dental_recurring").select("payload");
+  return (data || []).map(r => r.payload);
+};
+const saveRecurring = async (templates) => {
+  const rows = templates.map(t => ({ id: t.id, payload: t }));
+  await sb.from("dental_recurring").upsert(rows, { onConflict: "id" });
+};
+
+// ── Staff ─────────────────────────────────────────────────────
+const STAFF = [
+  { id:"mgr",  name:"Mela",   role:"manager",  initials:"ME", avatar:"#0f3d52" },
+  { id:"emp1", name:"Aaron",  role:"employee", title:"Temshik", initials:"AA", avatar:"#1a6b5a" },
+  { id:"emp2", name:"Nievez", role:"employee", title:"Temshik", initials:"NI", avatar:"#5a4520" },
+  { id:"emp3", name:"Yoan",   role:"employee", title:"Hygienist / Front Desk", initials:"YO", avatar:"#4a2060" },
+];
+const employees = STAFF.filter(s => s.role==="employee");
+
+// ── Demo: pre-built questions (no API in demo) ────────────────
+function getDemoQuestions(assignee) {
+  return [
+    { question:`When does this need to be done, ${assignee.name.split(" ")[0]}?`,
+      options:["Within the next 30 min","Before next patient block","By end of today","Tomorrow morning"] },
+    { question:"How urgent is this task?",
+      options:["Urgent — affects patient care now","High — needs doing soon","Normal — before end of shift","Low — when time allows"] },
+    { question:"What does a completed task look like?",
+      options:["Per standard protocol","Mela inspects it","Patient-ready & documented","Report back when complete"] },
+    { question:"Who needs to be notified when done?",
+      options:["Mela only","Front desk too","The whole team","No notification needed"] },
+  ];
+}
+
+function getDemoTask(rawTask, assignee) {
+  return {
+    title: rawTask.length > 40 ? rawTask.slice(0,38)+"…" : rawTask,
+    description: `${assignee.name} needs to complete the following: ${rawTask}. Please follow standard dental office protocol and confirm when finished.`,
+    steps: [
+      "Review the task requirements and gather needed supplies",
+      "Complete the task per standard office protocol",
+      "Confirm completion and notify the relevant team member",
+    ],
+    priority: "Medium",
+    notes: "",
+  };
+}
+
+// ── Pre-seeded demo tasks ─────────────────────────────────────
+
+// ── Shared Components ─────────────────────────────────────────
+function Avatar({ user, size=36 }) {
+  return <div style={{width:size,height:size,borderRadius:"50%",background:user.avatar,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*.34,fontWeight:600,letterSpacing:".4px",flexShrink:0}}>{user.initials}</div>;
+}
+function StatusTag({ status }) {
+  const m={open:{bg:"#e3f0ff",c:"#1a4a9a"},inprogress:{bg:"#fff3cd",c:"#956300"},done:{bg:G.greenLight,c:G.green}};
+  const l={open:"Open",inprogress:"In Progress",done:"Done"};
+  const s=m[status]||m.open;
+  return <span style={{display:"inline-flex",alignItems:"center",padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:600,background:s.bg,color:s.c}}>{l[status]||status}</span>;
+}
+function PriTag({ priority }) {
+  const m={Urgent:{bg:"#ffd0d0",c:"#9a1010"},High:{bg:"#ffe3e3",c:"#b82020"},Medium:{bg:G.accentLight,c:"#8a5500"},Low:{bg:G.greenLight,c:G.green}};
+  const s=m[priority]||m.Medium;
+  return <span style={{display:"inline-flex",alignItems:"center",padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:700,background:s.bg,color:s.c}}>{priority}</span>;
+}
+function Spinner({ size=20, color=G.tealMid }) {
+  return <svg className="spin" width={size} height={size} fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,.1)" strokeWidth="3"/><path d="M12 2a10 10 0 0110 10" stroke={color} strokeWidth="3" strokeLinecap="round"/></svg>;
+}
+
+// ── Survey Question ───────────────────────────────────────────
+function SurveyQuestion({ question, index, total, onAnswer }) {
+  const [sel, setSel]         = useState(null);
+  const [showOther, setOther] = useState(false);
+  const [otherText, setOtherText] = useState("");
+  const otherRef = useRef(null);
+  useEffect(()=>{ if(showOther&&otherRef.current) otherRef.current.focus(); },[showOther]);
+
+  const canGo = sel!==null||(showOther&&otherText.trim().length>0);
+  const progress = (index/total)*100;
+  function pick(o){ setSel(o); setOther(false); setOtherText(""); }
+  function go(){ if(canGo) onAnswer(question.question, showOther?otherText.trim():sel); }
+
+  return (
+    <div className="slide-in" style={{display:"flex",flexDirection:"column"}}>
+      <div style={{marginBottom:20}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:7}}>
+          <span style={{fontSize:11,color:G.sub,fontWeight:600,textTransform:"uppercase",letterSpacing:"1px"}}>Question {index+1} of {total}</span>
+          <span style={{fontSize:11,color:G.tealMid,fontWeight:600}}>{Math.round(progress)}%</span>
+        </div>
+        <div style={{height:5,background:G.border,borderRadius:5,overflow:"hidden"}}>
+          <div className="progress-fill" style={{height:"100%",width:`${progress}%`,background:`linear-gradient(90deg,${G.teal},${G.tealBright})`,borderRadius:5}}/>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:10,alignItems:"flex-start",marginBottom:18}}>
+        <div style={{width:30,height:30,borderRadius:"50%",background:G.tealLight,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
+          <svg width="14" height="14" fill={G.teal} viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5v1h1a3 3 0 010 6h-1v1a5 5 0 01-10 0v-1H6a3 3 0 010-6h1V7a5 5 0 015-5z"/></svg>
+        </div>
+        <h3 style={{fontSize:17,fontWeight:600,color:G.navy,lineHeight:1.45,paddingTop:3}}>{question.question}</h3>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+        {question.options.map((opt,i)=>{
+          const isSel=sel===opt;
+          return (
+            <button key={i} onClick={()=>pick(opt)} className={`opt-btn${isSel?" sel-teal":""}`}>
+              <div style={{width:20,height:20,borderRadius:"50%",flexShrink:0,border:`2px solid ${isSel?G.tealMid:G.border}`,background:isSel?G.tealMid:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
+                {isSel&&<div style={{width:7,height:7,borderRadius:"50%",background:"#fff"}}/>}
+              </div>
+              <span style={{fontSize:14,color:isSel?G.teal:G.text,fontWeight:isSel?500:400,lineHeight:1.4}}>{opt}</span>
+            </button>
+          );
+        })}
+        <button onClick={()=>{setSel(null);setOther(true);}} className={`opt-btn${showOther?" sel-amber":""}`}>
+          <div style={{width:20,height:20,borderRadius:"50%",flexShrink:0,border:`2px solid ${showOther?G.accent:G.border}`,background:showOther?G.accent:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
+            {showOther&&<div style={{width:7,height:7,borderRadius:"50%",background:"#fff"}}/>}
+          </div>
+          <span style={{fontSize:14,color:showOther?G.accent:G.sub,fontWeight:showOther?500:400}}>✏️  Something else — type your own</span>
+        </button>
+        {showOther&&(
+          <div className="fade-up" style={{border:`2px solid ${G.accent}`,borderRadius:13,background:G.accentLight,overflow:"hidden"}}>
+            <textarea ref={otherRef} value={otherText} onChange={e=>setOtherText(e.target.value)}
+              placeholder="Type your answer…" rows={3}
+              onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&(e.preventDefault(),go())}
+              style={{width:"100%",padding:"13px 15px",fontSize:14,color:G.text,lineHeight:1.55,background:"transparent"}}/>
+          </div>
+        )}
+      </div>
+      <button onClick={go} disabled={!canGo} style={{width:"100%",padding:"14px",borderRadius:13,fontWeight:600,fontSize:14,transition:"all .2s",background:canGo?G.tealMid:G.border,color:canGo?"#fff":G.sub,boxShadow:canGo?"0 4px 16px rgba(31,144,128,.3)":"none"}}>
+        {index+1===total?"Review Task →":"Next →"}
+      </button>
+    </div>
+  );
+}
+
+// ── Checklist ─────────────────────────────────────────────────
+function Checklist({ steps, onUpdate, readonly=false }) {
+  if (!steps||steps.length===0) return null;
+  const done=steps.filter(s=>s.done).length;
+  const pct=Math.round((done/steps.length)*100);
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <p style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:".8px"}}>Checklist</p>
+        <span style={{fontSize:11,color:done===steps.length?G.green:G.sub,fontWeight:600}}>{done}/{steps.length} done {done===steps.length?"✓":""}</span>
+      </div>
+      <div style={{height:4,background:G.border,borderRadius:4,overflow:"hidden",marginBottom:10}}>
+        <div className="progress-fill" style={{height:"100%",width:`${pct}%`,background:done===steps.length?G.green:G.tealMid,borderRadius:4}}/>
+      </div>
+      {steps.map((s,i)=>(
+        <div key={i} className={`check-item${s.done?" done-item":""}`}
+          onClick={()=>{ if(readonly)return; const n=[...steps];n[i]={...n[i],done:!n[i].done};onUpdate(n); }}
+          style={{cursor:readonly?"default":"pointer"}}>
+          <div style={{width:20,height:20,borderRadius:6,border:`2px solid ${s.done?G.tealMid:G.border}`,background:s.done?G.tealMid:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1,transition:"all .15s"}}>
+            {s.done&&<svg width="10" height="10" fill="none" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </div>
+          <span style={{fontSize:13,color:s.done?G.sub:G.text,lineHeight:1.5,textDecoration:s.done?"line-through":"none"}}>{s.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── New Task Wizard ───────────────────────────────────────────
+const FREQ_OPTS = ["None","Daily","Weekly","Monthly"];
+
+function NewTaskWizard({ manager, tasks, setTasks, onCancel }) {
+  const [step,setStep]       = useState("form");
+  const [assignee,setAssignee] = useState(null);
+  const [rawTask,setRawTask] = useState("");
+  const [patientCtx,setPatCtx] = useState("");
+  const [frequency,setFreq]  = useState("None");
+  const [questions,setQs]    = useState([]);
+  const [taskTpl,setTpl]     = useState(null);
+  const [qIndex,setQIdx]     = useState(0);
+  const [answers,setAnswers] = useState({});
+  const [finalTask,setFinal] = useState(null);
+  const [sending,setSending] = useState(false);
+
+  async function startSurvey() {
+    if(!assignee||!rawTask.trim()) return;
+    setStep("loading");
+    const sys = `You are a dental office task assistant.
+Return a JSON object with EXACTLY these two keys, no markdown, no explanation:
+{
+  "questions": [
+    {"question": "short question max 10 words", "options": ["opt1","opt2","opt3","opt4"]},
+    {"question": "...", "options": ["...","...","...","..."]},
+    {"question": "...", "options": ["...","...","...","..."]},
+    {"question": "...", "options": ["...","...","...","..."]}
+  ],
+  "task": {
+    "title": "4-6 word title",
+    "description": "Two sentence description.",
+    "steps": ["step 1", "step 2", "step 3"],
+    "priority": "Medium",
+    "notes": "any extra context"
+  }
+}
+Make options specific to a dental office. Cover: deadline, urgency, scope, notification.`;
+    try {
+      const raw = await callClaude(
+        [{role:"user", content:`Task: "${rawTask}"\nEmployee: ${assignee.name}, ${assignee.title}${patientCtx?`\nPatient: ${patientCtx}`:""}`}],
+        sys
+      );
+      const stripped = raw.replace(/\`\`\`json|\`\`\`/gi,"").trim();
+      const s = stripped.indexOf("{"); const e = stripped.lastIndexOf("}");
+      const parsed = JSON.parse(s>=0&&e>s ? stripped.slice(s,e+1) : stripped);
+      const qs = Array.isArray(parsed?.questions) && parsed.questions.length >= 3 ? parsed.questions : getDemoQuestions(assignee);
+      setQs(qs);
+      setTpl(parsed?.task || getDemoTask(rawTask, assignee));
+    } catch {
+      setQs(getDemoQuestions(assignee));
+      setTpl(getDemoTask(rawTask, assignee));
+    }
+    setStep("survey");
+  }
+
+  function handleAnswer(question, answer) {
+    const na={...answers,[question]:answer};
+    setAnswers(na);
+    if(qIndex+1<questions.length){ setQIdx(qIndex+1); return; }
+    const vals=Object.values(na);
+    const deadline=vals[0]||"As discussed";
+    const priority=vals[1]?.includes("Urgent")?"Urgent":vals[1]?.includes("High")?"High":vals[1]?.includes("Low")?"Low":"Medium";
+    const notifyNote=vals[3]||"";
+    setFinal({
+      title: taskTpl?.title||rawTask.slice(0,40),
+      description: taskTpl?.description||rawTask,
+      steps: normalizeSteps(taskTpl?.steps||[]),
+      deadline, priority,
+      notes:[taskTpl?.notes,notifyNote?`Notify: ${notifyNote}`:""].filter(Boolean).join(" · ")||"",
+      patientContext: patientCtx,
+    });
+    setStep("preview");
+  }
+
+  function confirmTask() {
+    if(sending) return;
+    setSending(true);
+    const task={
+      id:uid(), title:finalTask.title, description:finalTask.description,
+      steps:finalTask.steps, deadline:finalTask.deadline, priority:finalTask.priority,
+      notes:finalTask.notes, patientContext:finalTask.patientContext||"",
+      assigneeId:assignee.id, assigneeName:assignee.name,
+      managerId:manager.id, managerName:manager.name,
+      status:"open", createdAt:nowStr(), acknowledgedAt:null,
+      recurringTemplateId:null, messages:[],
+    };
+    if(frequency!=="None"){
+      loadRecurring().then(templates => saveRecurring([...templates,{...task,id:uid(),frequency:frequency.toLowerCase(),lastCreatedDate:new Date().toDateString()}]));
+    }
+    setStep("sent");
+    setTimeout(()=>{
+      const updated=[...tasks,task];
+      setTasks(updated); saveOneTask(task);
+      onCancel();
+    },1800);
+  }
+
+  const priBg={High:"#ffe3e3",Urgent:"#ffd0d0",Medium:G.accentLight,Low:G.greenLight};
+  const priC ={High:"#b82020",Urgent:"#9a1010",Medium:"#8a5500",Low:G.green};
+
+  return (
+    <div className="fade-up" style={{background:G.surface,borderRadius:22,padding:28,boxShadow:G.shadowMd,maxWidth:540,width:"100%",margin:"0 auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24}}>
+        <div>
+          <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:23,color:G.navy,fontWeight:600}}>New Task</h2>
+          <p style={{fontSize:12,color:G.sub,marginTop:3}}>
+            {step==="form"&&"Fill in the basics"}{step==="loading"&&"Building questions…"}
+            {step==="survey"&&`Clarifying for ${assignee?.name?.split(" ")[0]}`}
+            {step==="preview"&&"Review before sending"}{step==="sent"&&"Task delivered!"}
+          </p>
+        </div>
+        {step!=="sent"&&<button onClick={onCancel} style={{color:G.sub,fontSize:22,lineHeight:1,padding:"2px 8px"}}>✕</button>}
+      </div>
+
+      {step==="form"&&(
+        <div className="fade-in" style={{display:"flex",flexDirection:"column",gap:18}}>
+          <div>
+            <label style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:"1px"}}>Assign To</label>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+              {employees.map(emp=>(
+                <button key={emp.id} onClick={()=>setAssignee(emp)} style={{display:"flex",alignItems:"center",gap:9,padding:"8px 12px",borderRadius:11,border:`2px solid ${assignee?.id===emp.id?G.tealMid:G.border}`,background:assignee?.id===emp.id?G.tealLight:"transparent",transition:"all .15s"}}>
+                  <Avatar user={emp} size={28}/>
+                  <div style={{textAlign:"left"}}>
+                    <div style={{fontSize:13,fontWeight:500,color:G.text}}>{emp.name.split(" ")[0]}</div>
+                    <div style={{fontSize:10,color:G.sub}}>{emp.title}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:"1px"}}>Task Description</label>
+            <textarea value={rawTask} onChange={e=>setRawTask(e.target.value)} placeholder={`e.g. "Prep room 2 for afternoon patients"`} rows={3}
+              style={{marginTop:10,width:"100%",padding:"13px 15px",borderRadius:13,border:`2px solid ${G.border}`,fontSize:14,color:G.text,lineHeight:1.6,background:G.card,transition:"border .18s"}}
+              onFocus={e=>e.target.style.borderColor=G.tealMid} onBlur={e=>e.target.style.borderColor=G.border}/>
+          </div>
+          <div>
+            <label style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:"1px"}}>Patient / Appointment <span style={{fontWeight:400,fontSize:11}}>(optional)</span></label>
+            <input value={patientCtx} onChange={e=>setPatCtx(e.target.value)} placeholder="e.g. John Smith — 2:30 PM crown prep, chair 3"
+              style={{marginTop:10,width:"100%",padding:"12px 15px",borderRadius:13,border:`2px solid ${G.border}`,fontSize:14,color:G.text,background:G.card,transition:"border .18s"}}
+              onFocus={e=>e.target.style.borderColor=G.tealMid} onBlur={e=>e.target.style.borderColor=G.border}/>
+          </div>
+          <div>
+            <label style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:"1px"}}>Repeat</label>
+            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              {FREQ_OPTS.map(f=>(
+                <button key={f} onClick={()=>setFreq(f)} style={{padding:"8px 16px",borderRadius:20,fontSize:13,fontWeight:500,border:`2px solid ${frequency===f?G.tealMid:G.border}`,background:frequency===f?G.tealLight:"transparent",color:frequency===f?G.teal:G.sub,transition:"all .15s"}}>{f}</button>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={startSurvey} disabled={!assignee||!rawTask.trim()} style={{padding:"14px",borderRadius:13,fontWeight:600,fontSize:14,transition:"all .2s",background:assignee&&rawTask.trim()?G.tealMid:G.border,color:assignee&&rawTask.trim()?"#fff":G.sub,boxShadow:assignee&&rawTask.trim()?"0 4px 16px rgba(31,144,128,.3)":"none"}}>
+            Start Clarification →
+          </button>
+        </div>
+      )}
+
+      {step==="loading"&&(
+        <div className="fade-in" style={{textAlign:"center",padding:"44px 20px"}}>
+          <div style={{display:"inline-flex",width:54,height:54,borderRadius:"50%",background:G.tealLight,alignItems:"center",justifyContent:"center",marginBottom:18}}><Spinner size={26}/></div>
+          <p style={{fontWeight:600,color:G.navy,fontSize:15}}>Building your questions…</p>
+          <p style={{fontSize:13,color:G.sub,marginTop:6}}>One moment — answers will be instant after this</p>
+        </div>
+      )}
+
+      {step==="survey"&&questions.length>0&&(
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",background:G.tealLight,borderRadius:10,marginBottom:16,border:`1px solid ${G.border}`}}>
+            <Avatar user={assignee} size={28}/>
+            <span style={{fontSize:13,color:G.navy,fontWeight:500}}>{assignee.name}</span>
+            <span style={{fontSize:12,color:G.sub}}>· {assignee.title}</span>
+          </div>
+          {patientCtx&&(
+            <div style={{display:"flex",gap:8,alignItems:"center",padding:"8px 13px",background:"#f0eafa",borderRadius:10,marginBottom:14,border:"1px solid #d4befa"}}>
+              <span>🦷</span><span style={{fontSize:12,color:"#4a2060",fontWeight:500}}>{patientCtx}</span>
+            </div>
+          )}
+          <div style={{background:G.accentLight,borderRadius:10,padding:"10px 14px",marginBottom:22,borderLeft:`3px solid ${G.accent}`}}>
+            <p style={{fontSize:11,color:"#8a5500",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:3}}>Task</p>
+            <p style={{fontSize:13,color:G.text}}>{rawTask}</p>
+          </div>
+          <SurveyQuestion key={qIndex} question={questions[qIndex]} index={qIndex} total={questions.length} onAnswer={handleAnswer}/>
+        </div>
+      )}
+
+      {step==="preview"&&finalTask&&(
+        <div className="fade-up">
+          <div style={{display:"flex",gap:8,alignItems:"center",padding:"9px 13px",background:G.greenLight,borderRadius:10,marginBottom:18}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill={G.green}/><path d="M8 12l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <span style={{fontSize:13,color:G.green,fontWeight:500}}>Task refined — ready to send</span>
+          </div>
+          <div style={{background:G.card,borderRadius:16,padding:18,border:`1.5px solid ${G.border}`,marginBottom:18}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,marginBottom:10}}>
+              <h3 style={{fontSize:16,fontWeight:600,color:G.navy,flex:1,lineHeight:1.35}}>{finalTask.title}</h3>
+              <span style={{fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,flexShrink:0,background:priBg[finalTask.priority]||G.tealLight,color:priC[finalTask.priority]||G.teal}}>{finalTask.priority}</span>
+            </div>
+            {finalTask.patientContext&&<div style={{display:"flex",gap:6,alignItems:"center",padding:"6px 10px",background:"#f0eafa",borderRadius:8,marginBottom:10,border:"1px solid #d4befa"}}><span>🦷</span><span style={{fontSize:12,color:"#4a2060",fontWeight:500}}>{finalTask.patientContext}</span></div>}
+            <p style={{fontSize:13,color:G.text,lineHeight:1.65,marginBottom:12}}>{finalTask.description}</p>
+            {finalTask.steps?.length>0&&(
+              <div style={{marginBottom:12}}>
+                <p style={{fontSize:11,fontWeight:600,color:G.sub,textTransform:"uppercase",letterSpacing:".8px",marginBottom:7}}>Steps</p>
+                {finalTask.steps.map((s,i)=>(
+                  <div key={i} style={{display:"flex",gap:9,alignItems:"flex-start",marginBottom:5}}>
+                    <div style={{width:19,height:19,borderRadius:"50%",background:G.tealLight,color:G.teal,fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{i+1}</div>
+                    <span style={{fontSize:13,color:G.text,lineHeight:1.5}}>{s.text||s}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{display:"flex",flexWrap:"wrap",gap:"8px 20px",paddingTop:10,borderTop:`1px solid ${G.border}`}}>
+              <span style={{fontSize:12,color:G.sub}}>📅 {finalTask.deadline}</span>
+              <span style={{fontSize:12,color:G.sub}}>👤 {assignee.name}</span>
+              {frequency!=="None"&&<span style={{fontSize:12,color:G.teal}}>♻️ {frequency}</span>}
+            </div>
+            {finalTask.notes&&<p style={{marginTop:10,fontSize:12,color:G.sub,fontStyle:"italic",borderTop:`1px solid ${G.border}`,paddingTop:10}}>📌 {finalTask.notes}</p>}
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{setStep("survey");setQIdx(0);setAnswers({});}} style={{flex:1,padding:"13px",borderRadius:13,fontWeight:500,fontSize:13,border:`2px solid ${G.border}`,color:G.sub}}>← Redo</button>
+            <button onClick={confirmTask} disabled={sending} style={{flex:2,padding:"13px",borderRadius:13,fontWeight:600,fontSize:14,background:sending?G.teal:G.tealMid,color:"#fff",boxShadow:"0 4px 16px rgba(31,144,128,.3)",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              {sending?<><Spinner size={16} color="#fff"/> Sending…</>:`Send to ${assignee.name.split(" ")[0]} →`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step==="sent"&&(
+        <div className="fade-up" style={{textAlign:"center",padding:"32px 16px 20px"}}>
+          <div style={{display:"inline-flex",width:72,height:72,borderRadius:"50%",background:G.greenLight,alignItems:"center",justifyContent:"center",marginBottom:20}}>
+            <svg width="36" height="36" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill={G.green}/><path d="M7 12l4 4 6-7" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </div>
+          <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:24,color:G.navy,fontWeight:600,marginBottom:8}}>Task Sent!</h3>
+          <p style={{fontSize:14,color:G.sub,marginBottom:16}}><strong style={{color:G.text}}>{finalTask?.title}</strong></p>
+          <div style={{display:"inline-flex",alignItems:"center",gap:10,padding:"10px 16px",background:G.tealLight,borderRadius:50,border:`1px solid ${G.border}`}}>
+            <Avatar user={assignee} size={28}/>
+            <div style={{textAlign:"left"}}>
+              <div style={{fontSize:13,fontWeight:600,color:G.navy}}>{assignee.name}</div>
+              <div style={{fontSize:11,color:G.sub}}>{assignee.title}</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Task Detail ───────────────────────────────────────────────
+function TaskDetail({ task, currentUser, tasks, setTasks, onBack }) {
+  const [msg, setMsg] = useState("");
+  const bottomRef = useRef(null);
+  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[task.messages]);
+
+  const isEmployee = currentUser.role==="employee";
+  const isManager  = !isEmployee;
+
+  function updateTask(updated) {
+    const all = tasks.map(t=>t.id===updated.id?updated:t);
+    setTasks(all); saveOneTask(updated);
+  }
+
+  function sendMessage() {
+    if(!msg.trim()) return;
+    updateTask({...task, messages:[...task.messages,{id:uid(),senderId:currentUser.id,senderName:currentUser.name,text:msg.trim(),at:nowStr(),type:"message"}]});
+    setMsg("");
+  }
+  function acknowledge() {
+    updateTask({...task, acknowledgedAt:nowStr(), messages:[...task.messages,{id:uid(),senderId:currentUser.id,senderName:currentUser.name,text:"✅ Task acknowledged — I'm on it.",at:nowStr(),type:"message"}]});
+  }
+  function updateChecklist(newSteps) {
+    const allDone=newSteps.every(s=>s.done);
+    updateTask({...task, steps:newSteps, status:allDone?"done":task.status==="open"?"inprogress":task.status});
+  }
+
+  const visibleMsgs = task.messages.filter(m=>m.type!=="system");
+  const steps = normalizeSteps(task.steps);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+      <div style={{padding:"16px 20px",borderBottom:`1px solid ${G.border}`,background:G.surface}}>
+        <button onClick={onBack} style={{display:"flex",alignItems:"center",gap:5,color:G.sub,fontSize:13,marginBottom:12}}>
+          <svg width="14" height="14" fill="none" stroke={G.sub} strokeWidth="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>Back to tasks
+        </button>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+          <div style={{flex:1}}>
+            <h2 style={{fontSize:17,fontWeight:600,color:G.navy,marginBottom:5}}>{task.title}</h2>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <StatusTag status={task.status}/><PriTag priority={task.priority}/>
+              <span style={{fontSize:12,color:G.sub}}>📅 {task.deadline}</span>
+              {isManager&&<span style={{fontSize:12,color:G.sub}}>👤 {task.assigneeName}</span>}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {["open","inprogress","done"].filter(s=>s!==task.status).map(s=>(
+              <button key={s} onClick={()=>updateTask({...task,status:s})} style={{padding:"5px 11px",borderRadius:8,fontSize:12,fontWeight:500,border:`1.5px solid ${G.border}`,color:G.sub,background:G.surface}}>
+                {s==="inprogress"?"In Progress":s.charAt(0).toUpperCase()+s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{marginTop:12,background:G.card,borderRadius:11,padding:14,border:`1px solid ${G.border}`}}>
+          {task.patientContext&&<div style={{display:"flex",gap:6,alignItems:"center",padding:"6px 10px",background:"#f0eafa",borderRadius:8,marginBottom:10,border:"1px solid #d4befa"}}><span>🦷</span><span style={{fontSize:12,color:"#4a2060",fontWeight:500}}>{task.patientContext}</span></div>}
+          <p style={{fontSize:13,color:G.text,lineHeight:1.65,marginBottom:steps.length?12:0}}>{task.description}</p>
+          <Checklist steps={steps} onUpdate={isEmployee?updateChecklist:undefined} readonly={isManager}/>
+          {task.notes&&<p style={{fontSize:12,color:G.sub,borderTop:`1px solid ${G.border}`,paddingTop:8,fontStyle:"italic"}}>📌 {task.notes}</p>}
+        </div>
+        {isManager&&task.acknowledgedAt&&(
+          <div style={{marginTop:10,display:"flex",alignItems:"center",gap:8,padding:"7px 12px",background:G.greenLight,borderRadius:9,border:"1px solid #b8dfc8"}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill={G.green}/><path d="M8 12l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <span style={{fontSize:12,color:G.green,fontWeight:500}}>Seen by {task.assigneeName} · {task.acknowledgedAt}</span>
+          </div>
+        )}
+        {isManager&&!task.acknowledgedAt&&(
+          <div style={{marginTop:10,display:"flex",alignItems:"center",gap:8,padding:"7px 12px",background:"#fff8e3",borderRadius:9,border:"1px solid #f0d080"}}>
+            <div className="pulse" style={{width:8,height:8,borderRadius:"50%",background:G.accent,flexShrink:0}}/>
+            <span style={{fontSize:12,color:"#7a5800"}}>Waiting for acknowledgment from {task.assigneeName}…</span>
+          </div>
+        )}
+      </div>
+
+      {isEmployee&&!task.acknowledgedAt&&(
+        <div style={{padding:"12px 20px",borderBottom:`1px solid ${G.border}`,background:"#fffdf5"}}>
+          <div style={{background:"linear-gradient(135deg,#fdf4e3,#fff8e8)",border:`1.5px solid ${G.accent}`,borderRadius:14,padding:"14px 16px",display:"flex",alignItems:"center",gap:12}}>
+            <div style={{flex:1}}>
+              <p style={{fontSize:14,fontWeight:600,color:G.navy,marginBottom:2}}>New task assigned to you</p>
+              <p style={{fontSize:12,color:G.sub}}>Tap to confirm you've seen it — Mela will be notified.</p>
+            </div>
+            <button onClick={acknowledge} style={{padding:"10px 18px",borderRadius:11,background:G.accent,color:"#fff",fontWeight:600,fontSize:13,flexShrink:0,boxShadow:"0 3px 12px rgba(232,160,37,.35)"}}>
+              👁 Acknowledge
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{flex:1,overflowY:"auto",padding:"16px 20px",display:"flex",flexDirection:"column",gap:12}}>
+        {visibleMsgs.length===0&&<div style={{textAlign:"center",color:G.sub,fontSize:13,marginTop:24,opacity:.7}}>No messages yet — start the conversation!</div>}
+        {visibleMsgs.map(m=>{
+          const sender=STAFF.find(s=>s.id===m.senderId);
+          const isMe=m.senderId===currentUser.id;
+          return (
+            <div key={m.id} className="fade-up" style={{display:"flex",gap:9,flexDirection:isMe?"row-reverse":"row",alignItems:"flex-start"}}>
+              {sender&&<Avatar user={sender} size={30}/>}
+              <div style={{maxWidth:"74%"}}>
+                <div style={{display:"flex",gap:8,alignItems:"baseline",flexDirection:isMe?"row-reverse":"row",marginBottom:3}}>
+                  <span style={{fontSize:12,fontWeight:600,color:G.navy}}>{isMe?"You":m.senderName}</span>
+                  <span style={{fontSize:10,color:G.sub}}>{m.at}</span>
+                </div>
+                <div style={{padding:"10px 14px",fontSize:13,lineHeight:1.55,borderRadius:isMe?"14px 4px 14px 14px":"4px 14px 14px 14px",background:isMe?G.navy:G.surface,color:isMe?"#fff":G.text,border:!isMe?`1.5px solid ${G.border}`:"none",boxShadow:"0 1px 6px rgba(0,0,0,.05)"}}>{m.text}</div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef}/>
+      </div>
+
+      <div style={{padding:"12px 20px",borderTop:`1px solid ${G.border}`,background:G.surface,display:"flex",gap:8}}>
+        <textarea value={msg} onChange={e=>setMsg(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&(e.preventDefault(),sendMessage())}
+          placeholder={isManager?"Send feedback or instructions…":"Send an update or question…"}
+          rows={2} style={{flex:1,padding:"10px 14px",borderRadius:12,border:`2px solid ${G.border}`,fontSize:13,color:G.text,background:G.card,lineHeight:1.5,transition:"border .15s"}}
+          onFocus={e=>e.target.style.borderColor=G.tealMid} onBlur={e=>e.target.style.borderColor=G.border}/>
+        <button onClick={sendMessage} disabled={!msg.trim()} style={{width:44,borderRadius:12,flexShrink:0,background:msg.trim()?G.tealMid:G.border,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <svg width="18" height="18" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Login ─────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [sel, setSel] = useState(null);
+  return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,background:"linear-gradient(150deg,#0b2233 0%,#0e3a30 55%,#1a4a3a 100%)"}}>
+      <div className="fade-up" style={{textAlign:"center",marginBottom:36}}>
+        <div style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:52,height:52,borderRadius:16,background:G.tealMid,marginBottom:14,boxShadow:"0 8px 24px rgba(31,144,128,.4)"}}>
+          <svg width="26" height="26" fill="none" viewBox="0 0 24 24"><path d="M12 2C8.5 2 5.5 5 5.5 8.5c0 2.3 1.1 4.4 2.8 5.7V19a.5.5 0 00.5.5h.5V21h6v-1.5h.5a.5.5 0 00.5-.5v-4.8c1.7-1.3 2.8-3.4 2.8-5.7C19.1 5 16.1 2 12 2z" fill="white" opacity=".95"/></svg>
+        </div>
+        <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:32,color:"#fff",fontWeight:600,letterSpacing:".5px"}}>Hart Dental</h1>
+        <p style={{fontSize:12,color:"rgba(255,255,255,.4)",letterSpacing:"2.5px",textTransform:"uppercase",marginTop:4}}>Task Communicator</p>
+
+      </div>
+      <div className="fade-up" style={{background:"rgba(255,255,255,.06)",borderRadius:22,padding:"28px 28px 24px",width:"100%",maxWidth:440,border:"1px solid rgba(255,255,255,.1)"}}>
+        <p style={{fontSize:13,color:"rgba(255,255,255,.45)",marginBottom:16,textAlign:"center"}}>Select your profile to continue</p>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {STAFF.map(u=>(
+            <button key={u.id} onClick={()=>setSel(u.id)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:13,textAlign:"left",transition:"all .18s",background:sel===u.id?"rgba(255,255,255,.14)":"rgba(255,255,255,.04)",border:`1.5px solid ${sel===u.id?"rgba(255,255,255,.3)":"rgba(255,255,255,.07)"}`}}>
+              <Avatar user={u} size={40}/>
+              <div style={{flex:1}}>
+                <div style={{color:"#fff",fontWeight:500,fontSize:14}}>{u.name}</div>
+                <div style={{color:"rgba(255,255,255,.4)",fontSize:12}}>{u.role==="manager"?"Office Manager":u.title+}</div>
+              </div>
+              {u.role==="manager"&&<span style={{fontSize:10,background:G.accent,color:"#fff",padding:"2px 8px",borderRadius:20,fontWeight:700}}>MGR</span>}
+              {sel===u.id&&<svg width="20" height="20" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill={G.tealMid}/><path d="M8 12l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+            </button>
+          ))}
+        </div>
+        <button onClick={()=>sel&&onLogin(STAFF.find(s=>s.id===sel))} disabled={!sel}
+          style={{marginTop:20,width:"100%",padding:"14px",borderRadius:13,fontWeight:600,fontSize:15,transition:"all .2s",background:sel?G.tealMid:"rgba(255,255,255,.08)",color:sel?"#fff":"rgba(255,255,255,.25)",boxShadow:sel?"0 4px 18px rgba(31,144,128,.35)":"none"}}>
+          Enter Workspace →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────
+function App() {
+  const [user, setUser]     = useState(null);
+  const [tasks, setTasks]   = useState([]);
+  const [view, setView]     = useState("tasks");
+  const [tab, setTab]       = useState("active");
+  const [selected, setSelected] = useState(null);
+
+  useEffect(()=>{
+    if(!user) return;
+    loadTasks().then(stored => setTasks(stored));
+
+    // Real-time subscription — tasks update across all devices instantly
+    const channel = sb.channel("dental_tasks_changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "dental_tasks" },
+        () => { loadTasks().then(t => setTasks(t)); }
+      ).subscribe();
+    return () => sb.removeChannel(channel);
+  },[user]);
+
+  function selectTask(t){ setSelected(t); setView("taskDetail"); }
+
+  if(!user) return <LoginScreen onLogin={setUser}/>;
+
+  const mine = user.role==="manager" ? tasks : tasks.filter(t=>t.assigneeId===user.id);
+  const openCount = mine.filter(t=>t.status!=="done").length;
+
+  return (
+    <div style={{minHeight:"100vh",background:G.bg,display:"flex",flexDirection:"column"}}>
+      {/* Nav */}
+      <div style={{background:G.navy,height:56,padding:"0 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:9,background:G.tealMid,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 2C8.5 2 5.5 5 5.5 8.5c0 2.3 1.1 4.4 2.8 5.7V19a.5.5 0 00.5.5h.5V21h6v-1.5h.5a.5.5 0 00.5-.5v-4.8c1.7-1.3 2.8-3.4 2.8-5.7C19.1 5 16.1 2 12 2z"/></svg>
+          </div>
+          <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:19,color:"#fff",fontWeight:600}}>Hart Dental</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          {openCount>0&&<div style={{display:"flex",alignItems:"center",gap:6,background:"rgba(255,255,255,.07)",padding:"4px 10px",borderRadius:20,border:"1px solid rgba(255,255,255,.1)"}}>
+            <div className="pulse" style={{width:7,height:7,borderRadius:"50%",background:G.tealBright}}/>
+            <span style={{fontSize:12,color:"rgba(255,255,255,.6)"}}>{openCount} open</span>
+          </div>}
+          <Avatar user={user} size={30}/>
+          <div style={{display:"none"}}/>
+          <button onClick={()=>{setUser(null);setView("tasks");setSelected(null);}} style={{color:"rgba(255,255,255,.4)",fontSize:12,padding:"4px 8px"}}>Sign out</button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,maxWidth:700,width:"100%",margin:"0 auto",padding:"22px 16px"}}>
+        {view==="tasks"&&(
+          <div className="fade-up">
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
+              <div>
+                <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:26,color:G.navy,fontWeight:600}}>{user.role==="manager"?"All Tasks":"My Tasks"}</h1>
+                <p style={{fontSize:13,color:G.sub,marginTop:2}}>{mine.length} tasks{openCount>0?`, ${openCount} open`:" — all done!"}</p>
+              </div>
+              {user.role==="manager"&&(
+                <button onClick={()=>setView("newTask")} style={{display:"flex",alignItems:"center",gap:7,padding:"10px 18px",borderRadius:12,background:G.tealMid,color:"#fff",fontWeight:600,fontSize:13,boxShadow:"0 4px 16px rgba(31,144,128,.3)"}}>
+                  <svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="white" strokeWidth="2.5" strokeLinecap="round"/></svg>New Task
+                </button>
+              )}
+            </div>
+            {user.role==="manager"&&(
+              <div style={{display:"flex",gap:6,marginBottom:16,background:G.surface,padding:4,borderRadius:24,width:"fit-content",border:`1px solid ${G.border}`}}>
+                <button className={`tab-btn${tab==="active"?" active":""}`} onClick={()=>setTab("active")}>Active Tasks</button>
+                <button className={`tab-btn${tab==="recurring"?" active":""}`} onClick={()=>setTab("recurring")}>♻️ Recurring</button>
+              </div>
+            )}
+            <div style={{background:G.surface,borderRadius:18,border:`1.5px solid ${G.border}`,overflow:"hidden",boxShadow:G.shadow}}>
+              {(tab==="active"||user.role==="employee") ? (
+                mine.length===0 ? (
+                  <div style={{textAlign:"center",padding:"52px 24px",color:G.sub}}>
+                    <div style={{fontSize:44,marginBottom:14}}>📋</div>
+                    <p style={{fontSize:15,fontWeight:500,color:G.navy}}>No tasks yet</p>
+                    <p style={{fontSize:13,marginTop:5}}>{user.role==="manager"?"Create a new task to get started":"You're all caught up!"}</p>
+                  </div>
+                ) : (
+                  <div style={{display:"flex",flexDirection:"column",gap:10,padding:"16px 20px"}}>
+                    {mine.map(task=>{
+                      const assignee=STAFF.find(s=>s.id===task.assigneeId);
+                      const vMsgs=task.messages.filter(m=>m.type!=="system");
+                      const hasUnread=vMsgs.length>0&&vMsgs[vMsgs.length-1].senderId!==user.id;
+                      const steps=normalizeSteps(task.steps);
+                      const donePct=steps.length?Math.round(steps.filter(s=>s.done).length/steps.length*100):null;
+                      const needsAck=user.role==="employee"&&!task.acknowledgedAt;
+                      return (
+                        <button key={task.id} onClick={()=>selectTask(task)}
+                          style={{display:"flex",gap:13,alignItems:"flex-start",padding:"14px 16px",background:G.surface,borderRadius:15,border:`2px solid ${hasUnread||needsAck?G.tealMid:G.border}`,textAlign:"left",transition:"all .18s",boxShadow:G.shadow}}
+                          onMouseOver={e=>e.currentTarget.style.boxShadow=G.shadowMd}
+                          onMouseOut={e=>e.currentTarget.style.boxShadow=G.shadow}>
+                          {assignee&&<Avatar user={assignee} size={40}/>}
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:3}}>
+                              <span style={{fontSize:14,fontWeight:hasUnread||needsAck?600:500,color:G.navy,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{task.title}</span>
+                              <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+                                {(hasUnread||needsAck)&&<div style={{width:8,height:8,borderRadius:"50%",background:G.tealBright}}/>}
+                                <StatusTag status={task.status}/><PriTag priority={task.priority}/>
+                              </div>
+                            </div>
+                            {task.patientContext&&<p style={{fontSize:11,color:"#4a2060",marginBottom:3,fontWeight:500}}>🦷 {task.patientContext}</p>}
+                            <p style={{fontSize:12,color:G.sub,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:5}}>{task.description}</p>
+                            {donePct!==null&&steps.length>0&&(
+                              <div style={{marginBottom:5}}>
+                                <div style={{height:3,background:G.border,borderRadius:3,overflow:"hidden"}}>
+                                  <div style={{height:"100%",width:`${donePct}%`,background:donePct===100?G.green:G.tealMid,borderRadius:3,transition:"width .3s"}}/>
+                                </div>
+                                <span style={{fontSize:10,color:donePct===100?G.green:G.sub,marginTop:2,display:"block"}}>{steps.filter(s=>s.done).length}/{steps.length} steps done</span>
+                              </div>
+                            )}
+                            <div style={{display:"flex",gap:12}}>
+                              <span style={{fontSize:11,color:G.sub}}>📅 {task.deadline}</span>
+                              {user.role==="manager"&&<span style={{fontSize:11,color:G.sub}}>👤 {task.assigneeName}</span>}
+                              {user.role==="manager"&&(task.acknowledgedAt?<span style={{fontSize:11,color:G.green}}>✓ Seen</span>:<span style={{fontSize:11,color:G.accent}}>⏳ Not seen</span>)}
+                              <span style={{fontSize:11,color:G.sub}}>💬 {vMsgs.length}</span>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )
+              ) : (
+                <div style={{textAlign:"center",padding:"52px 24px",color:G.sub}}>
+                  <div style={{fontSize:44,marginBottom:14}}>♻️</div>
+                  <p style={{fontSize:15,fontWeight:500,color:G.navy}}>No recurring tasks yet</p>
+                  <p style={{fontSize:13,marginTop:5}}>Create a task with a repeat schedule and it'll appear here.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {view==="newTask"&&(
+          <NewTaskWizard manager={user} tasks={tasks} setTasks={setTasks} onCancel={()=>setView("tasks")}/>
+        )}
+
+        {view==="taskDetail"&&selected&&(
+          <div className="fade-up" style={{background:G.surface,borderRadius:18,border:`1.5px solid ${G.border}`,overflow:"hidden",boxShadow:G.shadow,display:"flex",flexDirection:"column",height:"calc(100vh - 120px)"}}>
+            <TaskDetail
+              task={tasks.find(t=>t.id===selected.id)||selected}
+              currentUser={user} tasks={tasks} setTasks={setTasks}
+              onBack={()=>{setView("tasks");setSelected(null);}}/>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
